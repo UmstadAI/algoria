@@ -178,3 +178,4 @@ This is a target scenario, not booked revenue. The full assumptions, trial rules
 - [Official MCP Registry record for Stellar Agent Search](https://registry.modelcontextprotocol.io/v0.1/servers?search=stellar-agent-search)
 - [Stellar Skills directory](https://skills.stellar.org/llms.txt)
 - [Stellar Agent Search npm download endpoint](https://api.npmjs.org/downloads/point/last-month/stellar-agent-search)
+- a
