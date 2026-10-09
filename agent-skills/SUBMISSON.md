@@ -1,19 +1,13 @@
 # Algoria - Scaling Track
 
 Github Repository: https://github.com/CenekSanzak/algoria
-Readme: 
-Landing Page: 
+Readme: https://github.com/CenekSanzak/algoria/blob/main/agent-skills/README.md
+Landing Page: https://algoria-x.vercel.app/
 NPM Package: https://www.npmjs.com/package/algoria
-Working live demo: 
+Working live demo: https://algoria-x.vercel.app/how-to-use
+Hackathon Pitch Presentation: https://algoria-hackathon-pitch.berkingurcan.chatgpt.site
 
-Technical Documentation: 
-"""
-Overall architecture
-Main components and their responsibilities
-Stellar integrations and protocols used
-Key design decisions and trade-offs
-Technical challenges and how you solved them
-"""
+Technical Documentation: https://github.com/CenekSanzak/algoria/blob/main/agent-skills/TECHNICAL_DOCUMENTATION.md
 
 Pitch Presentation
 
