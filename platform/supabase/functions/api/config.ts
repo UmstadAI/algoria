@@ -1,5 +1,11 @@
 export interface Config {
-  mpp?: { recipient: string; amount: string; secret: string };
+  mpp?: {
+    recipient: string;
+    amount: string;
+    secret: string;
+    phone?: { recipient: string; amount: string };
+    social?: { recipient: string; amount: string };
+  };
   supabaseUrl: string;
   serviceRoleKey: string;
   falKey: string;
@@ -9,6 +15,19 @@ export interface Config {
   priceAtomic: string;
   servicePayments?: Record<string, { payTo: string; priceAtomic: string }>;
   phone?: PhoneConfig;
+}
+/** Phone inherits the provider's Tempo receiver unless explicitly overridden.
+ * Amounts are six-decimal PathUSD units, never Stellar's seven-decimal units. */
+export function tempoServicePayment(config: Config, service: string) {
+  if (!config.mpp) return undefined;
+  if (service === 'image.generate') return { recipient: config.mpp.recipient, amount: config.mpp.amount };
+  if (service === 'phone.call') {
+    return config.mpp.phone ?? { recipient: config.mpp.recipient, amount: '100000' };
+  }
+  if (service === 'video.social') {
+    return config.mpp.social ?? { recipient: config.mpp.recipient, amount: '110000' };
+  }
+  return undefined;
 }
 export interface PhoneConfig {
   accountSid: string;
@@ -109,6 +128,14 @@ export function readConfig(): Config {
           recipient: required('TEMPO_IMAGE_RECIPIENT'),
           amount: Deno.env.get('TEMPO_IMAGE_PRICE_ATOMIC') ?? '10000',
           secret: required('MPP_SECRET_KEY'),
+          phone: {
+            recipient: Deno.env.get('TEMPO_PHONE_RECIPIENT') || required('TEMPO_IMAGE_RECIPIENT'),
+            amount: Deno.env.get('TEMPO_PHONE_PRICE_ATOMIC') ?? '100000',
+          },
+          social: {
+            recipient: Deno.env.get('TEMPO_SOCIAL_RECIPIENT') || required('TEMPO_IMAGE_RECIPIENT'),
+            amount: Deno.env.get('TEMPO_SOCIAL_PRICE_ATOMIC') ?? '110000',
+          },
         },
       }
       : {}),

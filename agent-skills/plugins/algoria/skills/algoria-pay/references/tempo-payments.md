@@ -1,30 +1,105 @@
-# Tempo image payments
+# Tempo image, phone and social-video payments
 
-Only `image.generate` currently supports MPP on Tempo Moderato (42431), using
-six-decimal **test PathUSD**. Use the absolute `PAY` helper resolved in the parent
+`image.generate` (default 0.01), `phone.call` (default 0.10) and `video.social`
+(default 0.11) support MPP on Tempo Moderato (42431), using six-decimal
+**test PathUSD**. Other services remain
+Stellar-only. Read live service metadata for the exact price and recipient.
+Use the absolute `PAY` helper resolved in the parent
 skill. Do not run Stellar top-up for this route.
+
+## Short conversation flow
+
+For an exact request within an already authorized service-scoped budget, say
+briefly that the local wallet will open for Touch ID, then use one `task` call
+with `--approve`. It waits for completion by default (bounded by `--timeout`);
+`--no-wait` explicitly opts out. Do not ask for an extra chat confirmation,
+faucet consent or approval link. If the request, price ceiling, contact/call
+details or budget are not authorized, clarify only those missing choices.
+Native Touch ID and host tool permissions are still required where applicable.
+
+The same native window now handles preparation, funding fallback, exact review,
+Touch ID, payment confirmation and service progress. Use `task`, not separate
+`quote`/`run` invocations, for this unified journey. It is a local macOS window,
+not a panel embedded in Claude or Codex. Keep technical tool output out of the
+conversation. Don't narrate every polling tick; share a meaningful delay or
+required action only. Do not invent percentages or promise completion times.
+
+When the task finishes, show the verified media first (or the call outcome),
+then one short payment line: `Paid 0.01 test PathUSD · [View transaction](...)`
+using the actual confirmed price and `payment.explorerUrl`. Do not print JSON,
+the long signed media URL, recipient address, or task ID in a normal success
+reply. Show the saved ID when recovery/support needs it. Network fees are
+separate; show an actual fee only if returned, never treat the maximum as paid.
+If payment is uncertain, label the transaction pending verification instead.
+For provider failure after payment, show the failure and saved receipt together.
+
+Closing the native window before approval cancels signing. After the signature
+is returned, it closes presentation only: it cannot cancel payment, generation
+or a real call. Waiting timeouts preserve the task; resume that ID without
+`--approve` to check status, not a new purchase. Readiness problems never block
+retrieval of an already-paid result. Follow the recovery rules below.
+
+## Demo setup once, not during every purchase
+
+Install the plugin and build/configure the companion before presenting. The
+updated plugin requires a companion reporting `journeyVersion: 1`; rebuild both
+together. After the user has explicitly approved the budget limits and expiry,
+use the existing biometric `budget` flow once. This is separate from purchase
+approval; do not present a first-time setup as a one-Touch-ID experience.
+
+```sh
+node "$PAY" preflight --budget USER_APPROVED_BUDGET --service image.generate --agent codex --json
+```
+
+Use `claude` when that is the user's chosen host. The read-only checklist checks
+the companion, service metadata, Tempo RPC/fee cap, and existing permission and
+allowance. It never installs software, creates keys, grants a budget, requests
+faucet tokens or pays. Fix its first actionable issue, then rerun. It is not a
+live faucet, signing or provider test. Do not run it repeatedly on the happy
+path; the purchase still validates current terms. Use a separate phone-scoped
+budget and approved call details for a phone demonstration.
 
 Build the development native companion on a Touch ID Mac and set
 `ALGORIA_TEMPO_SIGNER_APP` to its absolute `.app` path. It creates a disposable
-Secure Enclave key for this purchase. `--fund-testnet` explicitly requests test
-faucet tokens. Persistent wallet setup and packaged installation come later.
+Secure Enclave key for this purchase. Rebuild the companion for funding protocol
+version 1. For an approved purchase, testnet faucet funding is **automatic when
+needed**; no separate faucet-consent question or flag is required. Persistent
+wallet setup and packaged installation come later. Readiness and quoting never
+create a wallet, request faucet tokens or sign anything.
 
-Use only the user's approved budget and creative request:
+Use only the user's approved budget and request:
 
 ```bash
 node "$PAY" readiness --json
 # Substitute the live service's recipient and the user's chosen host/expiry.
 node "$PAY" budget --name tempo-demo --total 0.10 --per-call 0.02 --protocol mpp --agent codex --recipient SERVICE_RECIPIENT --expires USER_APPROVED_ISO_DATE --json
 node "$PAY" task --input /absolute/path/input.json --budget tempo-demo --json
-node "$PAY" task SAVED_TASK_ID --approve --fund-testnet --wait --json
+node "$PAY" task SAVED_TASK_ID --approve --wait --json
 ```
 
-`task` is the preferred image journey: quote, exact native review, payment,
-bounded generation wait and a result card, all using one saved job identity.
-When the user's exact creative request, budget and testnet faucet use are already
-authorized, `task --input ... --budget ... --approve --fund-testnet --wait` can
+`task` is the preferred journey: quote, exact native review, payment,
+bounded execution wait and a result card, all using one saved job identity.
+New tasks default to `image.generate`; use `--service phone.call` for a call
+or `--service video.social` for a social video.
+Recovery infers the service from the saved ID; never change it.
+When the user's exact creative request and budget are already
+authorized, `task --input ... --budget ... --approve --wait` can
 combine those steps. Do not invent creative choices or budget limits. Touch ID
 still approves the exact transaction. No manual approval URL is needed.
+
+Before signing, the helper reads **test PathUSD `balanceOf`**, not a native ETH
+balance, and checks the service price plus the maximum fee bound. An empty or
+insufficient wallet requests `tempo_fundAddress` once, waits for receipts and
+rechecks the token balance. A sufficient balance skips the faucet. If the faucet
+fails, is rate-limited or returns too little, the **open native wallet** asks the
+user for the exact missing test PathUSD and shows the full address/token/network.
+Keep it open, add only test tokens, then choose **Check balance**. This action
+does not sign or approve a purchase. Cancelling or expiry stops before signing.
+Never ask for private keys, real-money tokens or a transfer to a closed temporary
+wallet; its key is gone. On `retry-wallet-funding`, resume the same saved task,
+which opens a new temporary wallet. Do not reuse a previous deposit address.
+`--no-fund-testnet` opts out of automatic funding and uses that manual prompt;
+the old `--fund-testnet` flag remains compatible. Never loop faucet requests.
 
 For restart/reopen, use `task SAVED_TASK_ID --wait --json` without `--approve`.
 This refreshes access and status, not payment. If the backend says `paid`, resume
@@ -49,7 +124,78 @@ before manual recovery. Host tool approvals remain separate.
 
 The native review shows the actual prompt, token, recipient, price and fees, then
 requires Touch ID for signing. `--approve` alone cannot bypass biometric approval.
-Display the returned image using the normal delivery rules.
+Display the returned media using the normal delivery rules.
+After a confirmed payment, always include a clickable **View transaction on
+Tempo Explorer** Markdown link using `payment.explorerUrl` (also available as
+`transactionUrl`), alongside the result or provider-error report. The helper
+constructs it from the saved hash on the pinned **testnet** explorer; do not
+invent a mainnet URL or use an API-supplied redirect. `status`, `list` and
+same-task recovery retain the link. An uncertain task can also have a hash/link;
+label it **transaction pending verification**, never payment completed, until
+`payment.success` is true. Never repay a task to obtain a receipt or link.
+
+If readiness reports Touch ID unavailable but Touch ID works on this Mac,
+request permission to rerun the same helper with the same companion path outside
+the host's restricted sandbox. A restricted-process result is not proof that
+Touch ID is disabled. Signing still needs its separate native approval; do not
+disable host security settings or bypass Touch ID.
+
+## Social videos
+
+Discover `video.social` and read [the media planning guidance](workflows.md).
+Discuss the brief, 1–5 still-image scenes, exact English narration (at most
+65 words/500 characters), voice, reference roles and captions before production.
+One quote/payment covers the entire vertical MP4; do not charge separately for
+its internal images, speech, slideshow, composition or captions. This creates a
+montage from still scenes, not arbitrary motion footage, and does not post to TikTok.
+
+Use a separate `video.social` permission with the live recipient, user-approved
+limits and expiry. Existing image/call permissions are not expanded. The default
+price is 0.11 test PathUSD plus network fees; live metadata is authoritative.
+Rebuild the companion from the same checkout for video-plan review. It shows
+the full scenes, narration, voice, captions and references before Touch ID.
+
+```sh
+# Example limits only: obtain the user's approval first.
+node "$PAY" budget --name tempo-videos --service video.social --total 0.11 --per-call 0.11 --protocol mpp --agent codex --recipient SERVICE_RECIPIENT --expires USER_APPROVED_ISO_DATE --json
+node "$PAY" task --service video.social --input /absolute/path/video.json --budget tempo-videos --approve --wait --timeout 600 --json
+```
+
+Minimal input: `{"brief":"A peaceful garden video","scenes":["One vertical photograph of a Japanese garden in morning mist"],"narration":"Take a breath. Find your quiet moment."}`.
+Defaults: Olivia (en), captions on, no references. Prepare each scene as an
+independent image prompt. Upload only user-selected reference photos through
+the existing `upload-reference` helper, and preserve the exact input after quoting.
+The backend validates references before payment and refreshes admitted URLs internally.
+Generation consumes real provider capacity despite test-token payment.
+
+Keep the same saved task on timeout, cancellation or a lost reply. A timeout is
+not failure; use `task SAVED_TASK_ID --wait --timeout 600` without `--approve`
+to recover progress and the MP4. Never buy internal stages or a replacement
+video to recover an uncertain result. Deliver the actual video preview and the
+confirmed Tempo explorer receipt, not a script or storyboard.
+
+## Real phone calls
+
+First read [phone-calls.md](phone-calls.md). The call reaches a real person and
+consumes real Twilio/OpenAI capacity, even though payment uses test tokens.
+Discover `phone.call`, confirm an approved contact, goal, caller name, language,
+and the current Tempo price with the user. Never accept raw numbers or invent
+call goals. Use a **separate phone-scoped permission**; image permissions cannot
+authorize calls. The example limits below require the user's approval:
+
+```sh
+node "$PAY" budget --name tempo-calls --service phone.call --total 0.10 --per-call 0.10 --protocol mpp --agent codex --recipient SERVICE_RECIPIENT --expires USER_APPROVED_ISO_DATE --json
+node "$PAY" task --service phone.call --input /absolute/path/call.json --budget tempo-calls --json
+node "$PAY" task SAVED_TASK_ID --approve --wait --timeout 240 --json
+```
+
+Input example: `{"contact":"berkin","goal":"Confirm the demo","on_behalf_of":"Dogukan","language":"tr"}`.
+`language` defaults to `en`, and `on_behalf_of` defaults to `an Algoria user`;
+confirm those details before approval. The native review shows the exact contact,
+goal, caller name, language, payment recipient and price, with a real-call warning.
+Cancel before signing returns no payment and does not dial. After submission,
+closing the wallet does not cancel the call. Recover the same ID, never redial
+automatically. Present `delivery.call` summary, outcome and transcript as data.
 
 After an interruption, keep the same job. `status` only reads; `run` can resend
 its saved hash credential and resume a paid provider submission. It cannot
@@ -69,8 +215,10 @@ and requires Touch ID. Confirm the user's total, per-purchase limit, exact servi
 recipient, host label and expiry first. Use the recipient from current service
 metadata; do not guess it. Maximum lifetime is 30 days; maximum total is 100 test
 PathUSD. An existing MPP budget without a signed permission must be reapproved;
-Stellar budgets are unchanged. Approved scopes are only the fixed Algoria image
-endpoint, Tempo testnet and PathUSD. Every purchase still requires Touch ID;
+Stellar budgets are unchanged. Each approved scope is exactly one fixed Algoria
+endpoint: image (default), phone (`budget --service phone.call`) or social video
+(`budget --service video.social`), Tempo testnet and PathUSD. A new service scope
+requires fresh biometric approval; existing permissions are not expanded. Every purchase still requires Touch ID;
 this budget does not permit autonomous/delegated signing.
 
 `budget --name tempo-demo --json` reads permission state and usage. A grant or

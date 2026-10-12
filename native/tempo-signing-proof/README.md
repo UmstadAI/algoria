@@ -1,8 +1,25 @@
 # Tempo native signing proof
 
-An isolated macOS development companion for the [implementation plan](../../docs/TEMPO_IMPLEMENTATION_PLAN.md). Its original proof mode is preserved; the source plugin can now launch it for structured MPP image purchases. The companion is built separately from the shipped plugin.
+An isolated macOS development companion for the [implementation plan](../../docs/TEMPO_IMPLEMENTATION_PLAN.md). Its original proof mode is preserved; the source plugin can launch it for structured MPP image, phone and social-video purchases. The companion is built separately from the shipped plugin.
+
+Version 0.12.0 adds `video.social`: the native review includes the exact brief,
+ordered scene prompts, narration, voice, captions and reference roles/URLs.
+It requires a separate video-scoped permission and signs one payment for the
+whole composite workflow. Rebuild this app alongside the updated plugin.
 
 ## What it proves
+
+The updated source plugin's `task` coordinator uses `--journey` to retain one
+native window through preparation, funding fallback, exact biometric approval,
+confirmation and real service status. `--status` reports `journeyVersion: 1`.
+The purchase's Wallet tab is now named Details; its full addresses remain
+available while the maximum network fee is on the first review page.
+Budget approval is still a separate operation. The post-signing pipe accepts
+fixed, bounded presentation stages and a validated testnet transaction hash
+only; it cannot sign another purchase. Closing before approval cancels signing.
+After signing it closes presentation only, not payment, generation or a call.
+The final status stays briefly, then closes; the result belongs in the chat.
+See [hackathon UX and rehearsal](../../docs/TEMPO_HACKATHON_UX.md).
 
 A dedicated AppKit wallet window has Review, Wallet, Permission and Activity sections. Its price-first layout, light/dark themes, scrollable detail cards and fixed approval bar disclose the disposable Secure Enclave P-256 key, signed local budget, exact request and fee bounds before Touch ID. Budget approval uses the same design, with Overview, Scope and Limits & safety sections. Touch ID protects the key's actual signing operation. The runner verifies the signature, sends the transaction once, and checks both the successful receipt and expected token transfer event.
 
@@ -88,11 +105,23 @@ Pinned versions are recorded in `package.json` and `package-lock.json`. Both cha
 
 ## MPP purchase extension
 
-The companion now also accepts a structured version-2 MPP image purchase with a
+The companion now also accepts a structured version-2 MPP image or phone purchase with a
 signed permission receipt (required in live mode). It
 constructs the challenge-bound `transferWithMemo`, reviews the actual prompt,
-recipient and price, then requires Touch ID to sign. See
+recipient and price, then requires Touch ID to sign. Phone reviews show the
+approved contact, goal, on-behalf-of name, language and a real-call warning.
+Permissions bind exactly one service/URL; image grants cannot cover calls. See
 [payment implementation and setup](../../docs/TEMPO_MPP_IMPLEMENTATION.md).
+
+Current plugin funding: an approved purchase automatically checks the wallet's
+test PathUSD token balance, requests the testnet faucet once if needed, and
+verifies the balance covers price plus the maximum fee. If insufficient, a
+funding-only native prompt keeps the SAME temporary key alive, shows the exact
+shortfall, address and token, and lets the user choose **Check balance** or
+**Cancel**. It never signs. Closing/cancellation/expiry discards that key; never
+transfer tokens to its old address. `--no-fund-testnet` opts out of automatic
+faucet funding. No real-funds or persistent-wallet support is added.
+See [funding and receipts](../../docs/TEMPO_FUNDING_AND_RECEIPTS.md).
 
 After building, `node scripts/check-purchase-runtime.mjs` verifies this path in
 the real JavaScriptCore runtime with an explicit offline software test key.
@@ -129,13 +158,15 @@ funding, RPC calls or purchases:
 ```sh
 ".build/Algoria Signing Proof.app/Contents/MacOS/AlgoriaSigningProof" --preview purchase
 ".build/Algoria Signing Proof.app/Contents/MacOS/AlgoriaSigningProof" --preview budget
+".build/Algoria Signing Proof.app/Contents/MacOS/AlgoriaSigningProof" --preview phone
+".build/Algoria Signing Proof.app/Contents/MacOS/AlgoriaSigningProof" --preview funding
 npm run test:ui
 ```
 
 Previews use clearly marked synthetic data and **Close preview**, never an
 approval action. All fixture branches exit before the SDK and key-creation
-paths. `--render-ui /absolute/existing/temp-directory` renders all seven pages
-in both light and dark appearances for visual review.
+paths. `--render-ui /absolute/existing/temp-directory` renders image and phone
+purchase/budget pages in both light and dark appearances for visual review.
 
 Live windows keep Cancel and Touch ID approval fixed below scrollable details.
 Escape and the close control cancel; Return is not a spending shortcut. The

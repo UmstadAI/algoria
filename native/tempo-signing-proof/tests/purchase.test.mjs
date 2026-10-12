@@ -8,7 +8,9 @@ import { Bytes, Hash } from 'ox';
 import { TxEnvelopeTempo, SignatureEnvelope } from 'ox/tempo';
 import { Challenge } from 'mppx';
 import * as Attribution from '../node_modules/mppx/dist/tempo/Attribution.js';
-import { preparePurchase, completePurchaseJSON } from '../src/purchase.mjs';
+import { preparePurchase, completePurchaseJSON, prepareFundingJSON } from '../src/purchase.mjs';
+import { signedPermission } from '../../../agent-skills/tests/helpers/permission.mjs';
+import { tempoResource } from '../../../agent-skills/plugins/algoria/lib/services/tempo-services.mjs';
 
 const privateKey = `0x${'1'.padStart(64, '0')}`;
 const publicKey = PublicKey.toHex(P256.getPublicKey({ privateKey }));
@@ -62,4 +64,117 @@ test('cannot reuse an approved signature after changing the recipient', () => {
   const copy = structuredClone(request);
   copy.challenge.request.recipient = '0x2222222222222222222222222222222222222222';
   assert.throws(() => completePurchaseJSON(JSON.stringify(copy), publicKey, der, now));
+});
+
+const callInput = { contact: 'berkin', goal: 'Ask about the demo — İstanbul', on_behalf_of: 'Dogukan', language: 'tr' };
+const socialInput = { brief: 'A quiet garden video', scenes: ['A vertical garden photograph', 'A wooden bridge'],
+  narration: 'Take a breath. Find your quiet moment.', voice: 'Olivia (en)',
+  references: [{ url: `https://vqqbvydiehuwdzbgvmun.supabase.co/storage/v1/object/sign/outputs/references/${challenge.meta.job_id}/${'a'.repeat(64)}.png?token=offline.fixture`, role: 'style' }], captions: true };
+function socialRequest() {
+  const service = 'video.social';
+  const c = Challenge.from({ secretKey: 'offline-test-secret'.repeat(3), method: 'tempo', intent: 'charge',
+    realm: challenge.realm, expires: challenge.expires,
+    meta: { resource: tempoResource(service), job_id: challenge.meta.job_id,
+      input_hash: Hash.sha256(Bytes.fromString(JSON.stringify({ service, input: socialInput })), { as: 'Hex' }).slice(2) },
+    request: { ...challenge.request, amount: '110000' } });
+  const policy = { version: 1, id: challenge.meta.job_id, budget: 'videos', agent: 'codex', service,
+    resource: tempoResource(service), network: 'eip155:42431', token: c.request.currency, recipient: c.request.recipient,
+    totalAtomic: '2200000', perCallAtomic: '1100000', validAfter: now - 1, validUntil: now + 600, previousId: null };
+  return { ...request, input: structuredClone(socialInput), challenge: c, permission: signedPermission(policy) };
+}
+test('native social purchase binds the full plan, exact 0.11 transfer, permission and bundled implementation', async () => {
+  const r = socialRequest(); const value = preparePurchase(r, publicKey, now);
+  assert.equal(value.summary.service, 'video.social'); assert.deepEqual(value.summary.social, socialInput);
+  assert.match(value.summary.action, /social video.*0.110000/); assert.equal(value.transaction.calls.length, 1);
+  const transfer = AbiFunction.from('function transferWithMemo(address to, uint256 amount, bytes32 memo) returns (bool)');
+  const [, amount, memo] = AbiFunction.decodeData(transfer, value.transaction.calls[0].data);
+  assert.equal(amount, 110000n); assert.ok(Attribution.verifyChallengeBinding(memo, r.challenge.id));
+  const der = Signature.toDerHex(P256.sign({ privateKey, payload: value.digest }));
+  const output = JSON.parse(completePurchaseJSON(JSON.stringify(r), publicKey, der, now));
+  assert.ok(SignatureEnvelope.verify(TxEnvelopeTempo.deserialize(output.serializedTransaction).signature,
+    { payload: value.digest, address: output.address }));
+  const { loadTempoSdk } = await import('../../../agent-skills/plugins/algoria/lib/services/tempo-sdk.mjs');
+  const bundled = (await loadTempoSdk()).preparePurchase(r, publicKey, now);
+  assert.equal(bundled.digest, value.digest); assert.deepEqual(bundled.summary, value.summary);
+});
+for (const [field, value] of Object.entries({ brief: 'Changed', scenes: ['Changed'], narration: 'Changed', voice: 'Sarah (en)',
+  captions: false, references: [{ url: 'https://example.test/ref.png', role: 'product' }] })) {
+  test(`native social rejects ${field} substitution`, () => {
+    const r = socialRequest(); r.input[field] = value; assert.throws(() => preparePurchase(r, publicKey, now));
+  });
+}
+test('native social rejects image/call scope, low per-purchase cap, expiry and noncanonical defaults', () => {
+  for (const service of ['image.generate', 'phone.call']) {
+    const r = socialRequest(); r.permission = signedPermission({ ...r.permission.policy, service, resource: tempoResource(service) });
+    assert.throws(() => preparePurchase(r, publicKey, now), /out-of-scope/);
+  }
+  const low = socialRequest(); low.permission = signedPermission({ ...low.permission.policy, perCallAtomic: '1000000' });
+  assert.throws(() => preparePurchase(low, publicKey, now), /out-of-scope/);
+  const expired = socialRequest(); expired.permission = signedPermission({ ...expired.permission.policy, validAfter: now - 60, validUntil: now - 1 });
+  assert.throws(() => preparePurchase(expired, publicKey, now));
+  const noncanonical = socialRequest(); delete noncanonical.input.captions;
+  assert.throws(() => preparePurchase(noncanonical, publicKey, now));
+});
+function callRequest() {
+  const c = Challenge.from({ secretKey: 'offline-test-secret'.repeat(3), method: 'tempo', intent: 'charge',
+    realm: challenge.realm, expires: challenge.expires,
+    meta: { resource: tempoResource('phone.call'), job_id: challenge.meta.job_id,
+      input_hash: Hash.sha256(Bytes.fromString(JSON.stringify({ service: 'phone.call', input: callInput })), { as: 'Hex' }).slice(2) },
+    request: { ...challenge.request, amount: '100000' } });
+  const policy = { version: 1, id: challenge.meta.job_id, budget: 'calls', agent: 'codex', service: 'phone.call',
+    resource: tempoResource('phone.call'), network: 'eip155:42431', token: c.request.currency, recipient: c.request.recipient,
+    totalAtomic: '2000000', perCallAtomic: '1000000', validAfter: now - 1, validUntil: now + 600, previousId: null };
+  return { ...request, challenge: c, input: { ...callInput }, permission: signedPermission(policy) };
+}
+test('funding review derives this wallet address and exact price/fee shortfall without signing', () => {
+  const r = callRequest();
+  const wrapper = { type: 'funding-required', request: r, balanceAtomic: '10000', expiresAt: (now + 180) * 1000 };
+  const funding = JSON.parse(prepareFundingJSON(JSON.stringify(wrapper), publicKey, now));
+  assert.equal(funding.address, preparePurchase(r, publicKey, now).summary.address);
+  assert.equal(funding.requiredAtomic, '120000'); assert.equal(funding.shortfallAtomic, '110000');
+  assert.equal(funding.expires, new Date((now + 165) * 1000).toISOString());
+  for (const patch of [{ address: '0x1111111111111111111111111111111111111111' }, { amount: '1' },
+    { balanceAtomic: '-1' }, { expiresAt: now * 1000 }, { expiresAt: (now + 300) * 1000 }]) {
+    assert.throws(() => prepareFundingJSON(JSON.stringify({ ...wrapper, ...patch }), publicKey, now));
+  }
+  delete r.permission;
+  assert.throws(() => prepareFundingJSON(JSON.stringify(wrapper), publicKey, now));
+});
+test('native phone approval binds 0.10 PathUSD and exposes the complete real-call details', () => {
+  const r = callRequest(); const value = preparePurchase(r, publicKey, now);
+  assert.equal(value.summary.service, 'phone.call');
+  assert.deepEqual(value.summary.call, callInput);
+  assert.equal(value.summary.prompt, undefined);
+  assert.match(value.summary.action, /real phone call.*0.100000/);
+  const transfer = AbiFunction.from('function transferWithMemo(address to, uint256 amount, bytes32 memo) returns (bool)');
+  const [, amount, memo] = AbiFunction.decodeData(transfer, value.transaction.calls[0].data);
+  assert.equal(amount, 100000n); assert.ok(Attribution.verifyChallengeBinding(memo, r.challenge.id));
+  const der = Signature.toDerHex(P256.sign({ privateKey, payload: value.digest }));
+  const output = JSON.parse(completePurchaseJSON(JSON.stringify(r), publicKey, der, now));
+  assert.ok(SignatureEnvelope.verify(TxEnvelopeTempo.deserialize(output.serializedTransaction).signature,
+    { payload: value.digest, address: output.address }));
+});
+for (const field of ['contact', 'goal', 'on_behalf_of', 'language']) test(`native rejects phone ${field} substitution`, () => {
+  const r = callRequest(); r.input[field] = field === 'language' ? 'en' : 'changed';
+  assert.throws(() => preparePurchase(r, publicKey, now));
+});
+test('native phone signing rejects image permissions even with the same recipient and sufficient limit', () => {
+  const r = callRequest();
+  r.permission = signedPermission({ ...r.permission.policy, service: 'image.generate', resource: tempoResource('image.generate') });
+  assert.throws(() => preparePurchase(r, publicKey, now), /out-of-scope/);
+});
+test('committed plugin bundle constructs the same exact phone transaction as the native source', async () => {
+  const { loadTempoSdk } = await import('../../../agent-skills/plugins/algoria/lib/services/tempo-sdk.mjs');
+  const sdk = await loadTempoSdk(); const r = callRequest();
+  const native = preparePurchase(r, publicKey, now); const bundled = sdk.preparePurchase(r, publicKey, now);
+  assert.equal(bundled.digest, native.digest); assert.deepEqual(bundled.summary, native.summary);
+  r.permission = signedPermission({ ...r.permission.policy, service: 'image.generate', resource: tempoResource('image.generate') });
+  assert.throws(() => sdk.preparePurchase(r, publicKey, now), /out-of-scope/);
+});
+test('native phone signing rejects mismatched resource, oversized price and noncanonical defaults', () => {
+  for (const mutate of [r => { r.challenge.meta.resource = tempoResource('image.generate'); },
+    r => { r.challenge.request.amount = '1000001'; }, r => { delete r.input.language; },
+    r => { r.input.contact = '+15550000000'; }, r => { r.input.hidden = true; }]) {
+    const r = callRequest(); mutate(r); assert.throws(() => preparePurchase(r, publicKey, now));
+  }
 });

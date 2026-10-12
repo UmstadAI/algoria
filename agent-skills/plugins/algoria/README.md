@@ -5,15 +5,48 @@ discovery, planning, quotes or payment attempts. If empty, provide the funding
 link immediately, verify the deposit, then resume the original task within its
 approved budget. The installed skills state this order in their entrypoints.
 
-Version 0.11.0 adds Touch ID-approved local Tempo budgets, exact recipient/service
+Version 0.12.0 adds Tempo `video.social` purchases (default **0.11 test PathUSD**)
+with a separate video permission and full plan review in the local wallet.
+One payment covers generated still scenes, English narration, composition and
+optional captions into a vertical MP4. No automatic TikTok publishing.
+Rebuild the companion and update the plugin together; see
+[Tempo social videos](skills/algoria-pay/references/tempo-payments.md#social-videos).
+Source/package preparation does not imply npm publication or a live paid test.
+
+Version 0.11.0 introduced Touch ID-approved local Tempo budgets, exact recipient/service
 scope, spending caps, expiry and immediate local revocation. Every purchase still
 requires Touch ID; this is not on-chain ERC-8196 enforcement. It retains a
-**single saved Tempo image task**, read-only readiness,
+**single saved Tempo image, phone or social-video task**, read-only readiness,
 clear progress/recovery actions and queued native Touch ID purchases. MPP uses
 a separate test PathUSD budget. See
 [Tempo payment setup](skills/algoria-pay/references/tempo-payments.md).
 The companion currently needs a local build; the existing Stellar setup below
 does not fund Tempo.
+
+Source update: approved Tempo purchases automatically check the test PathUSD
+balance and request faucet tokens only when needed. If the balance still cannot
+cover the price plus maximum fee, the open wallet asks for missing **test** tokens
+and rechecks before signing. Rebuild the companion for this funding protocol;
+wallets remain temporary. Payment results and recovered tasks expose a clickable
+Tempo testnet explorer receipt. This source update still needs a plugin release.
+
+Hackathon UX source update: `pay task --approve` now waits by default and keeps
+one native window through preparation, Touch ID review, confirmation and service
+progress. Use `--no-wait` to return early. The purchase card exposes the maximum
+network fee, with full addresses under Details. `pay preflight --budget NAME`
+checks installation, service, RPC and existing allowance without keys or payment.
+Agent instructions deliver media first and a short explorer receipt line.
+Rebuild the companion for `journeyVersion: 1` and release/update the plugin
+together. Initial budget approval remains a separate Touch ID step.
+
+Tempo phone support: `phone.call` accepts **0.10 test PathUSD** by default, in
+addition to Stellar x402. Use `pay budget --service phone.call` for a separate
+biometric-approved call scope, then `pay task --service phone.call`. The local
+wallet reviews the contact, goal, caller name and language before Touch ID.
+Image permissions cannot pay for calls. Rebuild the native companion from this
+checkout for phone support; source changes are not an npm/backend deployment.
+Calls are real, limited to operator-approved contacts, and never automatically
+redialed after an interruption. See [phone setup](skills/algoria-pay/references/phone-calls.md).
 
 A personal context and execution layer above service discovery catalogs.
 Algoria keeps the user's preferred services, project context, job history and

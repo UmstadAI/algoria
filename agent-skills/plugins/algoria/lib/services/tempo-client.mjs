@@ -6,11 +6,13 @@ import { getBudget, readLedger, editLedger, updateJob, readJob, publicJob, reser
 import { loadTempoSdk } from './tempo-sdk.mjs';
 import { signAndPayTempo } from './tempo-signer.mjs';
 import { loadServicesSdk } from './sdk.mjs';
+import { normalizeTempoInput, tempoResource } from './tempo-services.mjs';
+import { TempoFundingError } from './tempo-funding.mjs';
 
-/** @param {any} job @param {string} [credential] */
-async function post(job, credential) {
-  if (job.apiBase !== API_BASE || job.resource !== serviceUrl('image.generate')) throw new Error('Untrusted MPP endpoint');
-  return apiFetch(`${job.resource}?mode=sync&wait_ms=45000`, { method: 'POST',
+/** @param {any} job @param {string} [credential] @param {boolean} [asynchronous] */
+async function post(job, credential, asynchronous = false) {
+  if (job.apiBase !== API_BASE || job.resource !== tempoResource(job.service) || job.resource !== serviceUrl(job.service)) throw new Error('Untrusted MPP endpoint');
+  return apiFetch(`${job.resource}${asynchronous ? '?mode=async' : '?mode=sync&wait_ms=45000'}`, { method: 'POST',
     headers: { 'content-type': 'application/json', 'X-Payment-Protocol': 'mpp',
       'Idempotency-Key': job.id, 'X-Recovery-Token': job.token,
       ...(credential ? { Authorization: credential } : {}) }, body: job.body }, 90000);
@@ -52,14 +54,12 @@ async function requestQuote(job) {
 /** @param {string} service @param {any} input @param {string} budget @param {string} [id] */
 export async function quoteTempo(service, input, budget, id = randomUUID()) {
   jobUrl(id);
-  if (service !== 'image.generate' || !input || Object.keys(input).length !== 1 ||
-      typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.length > 4000) throw new Error('MPP supports image.generate with one prompt');
-  const body = JSON.stringify({ prompt: input.prompt.trim() });
+  const body = JSON.stringify(normalizeTempoInput(service, input));
   return withLock(`job-${id}`, async () => {
     if ((await getBudget(budget)).protocol !== 'mpp') throw new Error('Configure a separate --protocol mpp budget first');
     let job = (await readLedger()).jobs[id];
     if (job) {
-      if (job.protocol !== 'mpp' || job.body !== body || job.budget !== budget) throw new Error('Saved job identity conflict');
+      if (job.protocol !== 'mpp' || job.service !== service || job.body !== body || job.budget !== budget) throw new Error('Saved job identity conflict');
       return publicJob(await requestQuote(job));
     }
     const result = await apiFetch(serviceUrl(service), { headers: { 'X-Payment-Protocol': 'mpp' } });
@@ -70,6 +70,10 @@ export async function quoteTempo(service, input, budget, id = randomUUID()) {
         offer?.protocol !== 'mpp' || offer.chain !== 'eip155:42431' || offer.decimals !== 6 ||
         offer.token !== '0x20c0000000000000000000000000000000000000' ||
         !/^0x[0-9a-f]{40}$/.test(offer.recipient) || !/^[1-9][0-9]{0,6}$/.test(offer.amount)) throw new Error('Unsupported MPP service metadata');
+    const { validateInput } = await loadServicesSdk();
+    validateInput(contract.input_schema, JSON.parse(body));
+    if (service === 'phone.call' && (!Array.isArray(contract.preparation?.contacts) ||
+        !contract.preparation.contacts.includes(JSON.parse(body).contact))) throw new Error('Choose an operator-approved phone contact');
     job = { id, protocol: 'mpp', chain: 'eip155:42431', tokenAsset: offer.token, decimals: 6,
       token: randomBytes(32).toString('base64url'), apiBase: API_BASE, resource: serviceUrl(service),
       service, serviceVersion: contract.version, body, budget, expectedOffer: offer,
@@ -99,7 +103,7 @@ async function accept(job, response, body) {
         reference: job.transaction, timestamp: payment.mpp.timestamp } };
   }
   if (body.status === 'succeeded') {
-    if (!payment || !body.output) throw new Error('Paid image result is incomplete');
+    if (!payment || !body.output) throw new Error('Paid service result is incomplete');
     const { validateInput } = await loadServicesSdk();
     validateInput(job.outputSchema, body);
   }
@@ -108,7 +112,7 @@ async function accept(job, response, body) {
     phase: body.status.endsWith('-uncertain') || (body.status === 'awaiting_payment' && job.dispatchedAt) ? 'uncertain' : body.status === 'succeeded' ? 'complete' : body.status === 'failed' ? 'failed' : payment ? 'settled' : job.phase });
 }
 
-/** @param {string} id @param {{approve?: boolean, fundTestnet?: boolean}} [options] */
+/** @param {string} id @param {import('./tempo-signer.mjs').SignOptions & {approve?: boolean}} [options] */
 export async function runTempo(id, options = {}) {
   return withLock(`job-${id}`, async () => {
     let job = await readJob(id);
@@ -118,7 +122,7 @@ export async function runTempo(id, options = {}) {
     if (status.body.status !== 'awaiting_payment') {
       job = await accept(job, status.response, status.body);
       if (job.status === 'paid') {
-        const result = await post(job);
+        const result = await post(job, undefined, Boolean(options.onWalletSession));
         job = await accept(job, result.response, result.body);
       }
       return publicJob(job);
@@ -128,22 +132,28 @@ export async function runTempo(id, options = {}) {
       if (!options.approve) throw new Error('Review the saved quote and run with --approve; Touch ID approves the exact purchase');
       job = await requestQuote(job);
       await reserveBudget(id, String(BigInt(job.offer.amount) * 10n));
+      await updateJob(id, { fundingIssue: null });
       try {
         await signAndPayTempo(job, { ...options, onStage: async uxStage => { await updateJob(id, { uxStage }); } }, async record => {
           job = await saveTempoDispatch(id, record);
         });
-      } catch {
+      } catch (error) {
         if (job.dispatchedAt) {
           await updateJob(id, { phase: 'uncertain', status: 'payment-uncertain' });
           throw new Error(`Job ${id}: Tempo submission uncertain. Recover this ID; its budget remains reserved.`);
         }
-        await editLedger(state => { delete state.budgets[job.budget].reservations[id]; state.jobs[id].uxStage = null; delete state.jobs[id].permissionId; });
+        await editLedger(state => {
+          delete state.budgets[job.budget].reservations[id]; state.jobs[id].uxStage = null;
+          delete state.jobs[id].permissionId;
+          state.jobs[id].fundingIssue = error instanceof TempoFundingError ? error.code : null;
+        });
+        if (error instanceof TempoFundingError) throw error;
         throw new Error(`Job ${id}: native purchase approval cancelled or unavailable; no payment dispatched.`);
       }
     }
     // Sending a saved hash credential cannot pay again. Backend claims it once.
     try {
-      const result = await post(job, job.credential);
+      const result = await post(job, job.credential, Boolean(options.onWalletSession));
       if (!result.body?.status) throw apiError(result.response, result.body);
       return publicJob(await accept(job, result.response, result.body));
     } catch {
@@ -153,8 +163,8 @@ export async function runTempo(id, options = {}) {
   });
 }
 
-/** @param {string} id @param {{wait?: boolean, timeout?: number}} [options] */
-export async function statusTempo(id, { wait = false, timeout = 180 } = {}) {
+/** @param {string} id @param {{wait?: boolean, timeout?: number, onUpdate?: (job: any) => void}} [options] */
+export async function statusTempo(id, { wait = false, timeout = 180, onUpdate } = {}) {
   if (!Number.isFinite(timeout) || timeout < 0 || timeout > 3600) throw new Error('Invalid status timeout');
   return withLock(`job-${id}`, async () => {
     let job = await readJob(id);
@@ -163,6 +173,7 @@ export async function statusTempo(id, { wait = false, timeout = 180 } = {}) {
       const result = await apiFetch(jobUrl(id), { headers: { Authorization: `Bearer ${job.token}` } });
       if (!result.response.ok) throw apiError(result.response, result.body);
       job = await accept(job, result.response, result.body);
+      try { onUpdate?.(publicJob(job)); } catch { /* Read-only UI is best effort. */ }
       if (!wait || !['settling', 'submitting', 'queued', 'running', 'saving', 'result-ready'].includes(job.status) || Date.now() >= deadline) break;
       await new Promise(resolve => setTimeout(resolve, Math.min(3000, deadline - Date.now())));
     } while (Date.now() < deadline);

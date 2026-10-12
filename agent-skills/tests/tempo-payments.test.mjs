@@ -13,7 +13,8 @@ const sdk = await loadTempoSdk();
 const signer = await import('../plugins/algoria/lib/services/tempo-signer.mjs');
 const approval = await import('../plugins/algoria/lib/services/permission-approval.mjs');
 const readiness = await import('../plugins/algoria/lib/services/tempo-readiness.mjs');
-const { imageTask } = await import('../plugins/algoria/lib/services/task.mjs');
+const { TempoFundingError } = await import('../plugins/algoria/lib/services/tempo-funding.mjs');
+const { imageTask, tempoTask } = await import('../plugins/algoria/lib/services/task.mjs');
 const { quoteTempo, validateMppQuote } = await import('../plugins/algoria/lib/services/tempo-client.mjs');
 const { runJob, statusJob } = await import('../plugins/algoria/lib/services/client.mjs');
 const { setBudget, getBudget, readJob, readLedger, ledgerPath, revokeBudget } = await import('../plugins/algoria/lib/services/state.mjs');
@@ -24,21 +25,28 @@ const transaction = `0x${'a'.repeat(64)}`;
 /** @type {Map<string, any>} */ let remote;
 /** @type {any} */ let contract;
 let signatures = 0, paidPosts = 0, loseResponse = false, loseBroadcast = false;
+/** @type {any} */ let walletFixture;
+/** @type {string[]} */ let pendingStatuses = [];
 /** @type {(c: any) => void} */ let mutate;
 
 /** @param {any} job @returns {any} */
 function result(job) {
+  const status = job.paid ? pendingStatuses.shift() ?? 'succeeded' : 'awaiting_payment';
   const payment = job.paid ? { success: true, protocol: 'mpp', network: 'eip155:42431',
-    token: contract.mpp.token, decimals: 6, payer, transaction, amount: '10000',
+    token: contract.mpp.token, decimals: 6, payer, transaction, amount: contract.mpp.amount,
     mpp: { method: 'tempo', status: 'success', reference: transaction, timestamp: '2026-10-05T00:00:00.000Z' } } : null;
-  return { job_id: job.id, service_id: 'image.generate', service_version: fixture.version,
-    status: job.paid ? 'succeeded' : 'awaiting_payment', status_url: `${API_BASE}/v1/jobs/${job.id}`,
-    payment, output: job.paid ? { images: [{ url: 'https://media.example/image.png', content_type: 'image/png' }], url_expires_in: 3600 } : null,
+  return { job_id: job.id, service_id: contract.id, service_version: contract.version,
+    status, status_url: `${API_BASE}/v1/jobs/${job.id}`,
+    payment, output: job.paid && status === 'succeeded' ? (contract.id === 'phone.call' ? { call: { contact: 'berkin', status: 'completed', duration_seconds: 25,
+      summary: 'Confirmed the demo.', goal_achieved: true, transcript: [{ speaker: 'contact', text: 'I am ready.' }] } }
+      : contract.id === 'video.social' ? { video: { url: 'https://media.example/video.mp4', content_type: 'video/mp4', width: 576, height: 1024, duration: 15 }, url_expires_in: 3600 }
+      : { images: [{ url: 'https://media.example/image.png', content_type: 'image/png' }], url_expires_in: 3600 }) : null,
     error: null };
 }
 beforeEach(async () => {
   await rm(ledgerPath(), { force: true });
   remote = new Map(); signatures = 0; paidPosts = 0; loseResponse = false; loseBroadcast = false; mutate = () => {};
+  walletFixture = undefined; pendingStatuses = [];
   contract = structuredClone(fixture);
   vi.spyOn(readiness, 'tempoReadiness').mockReturnValue({ ready: true, reason: 'ready', nextAction: 'Review purchase', fundingRequired: true,
     protocol: 'mpp', network: 'eip155:42431', unit: 'test PathUSD', walletMode: 'disposable', realFundsSupported: false, permissionsEnabled: true, permissionEnforcement: 'local-only', delegatedSigningEnabled: false });
@@ -51,6 +59,7 @@ beforeEach(async () => {
     const credential = sdk.Credential.serialize({ challenge: job.challenge,
       payload: { type: 'hash', hash: transaction }, source: `did:pkh:eip155:42431:${payer}` });
     await save({ credential, transaction, payer });
+    if (walletFixture) _options.onWalletSession?.(walletFixture);
     if (loseBroadcast) throw new Error('lost RPC reply');
     return { credential, transaction, payer };
   });
@@ -71,9 +80,9 @@ beforeEach(async () => {
       const input = JSON.parse(String(options.body));
       const challenge = sdk.Challenge.from({ secretKey: 'offline-secret'.repeat(3), method: 'tempo', intent: 'charge',
         realm: new URL(API_BASE).host, expires: new Date(Date.now() + 600000).toISOString(),
-        meta: { job_id: id, resource: `${API_BASE}/v1/services/image.generate`,
-          input_hash: createHash('sha256').update(JSON.stringify({ service: 'image.generate', input })).digest('hex') },
-        request: { amount: '10000', recipient, currency: contract.mpp.token,
+        meta: { job_id: id, resource: contract.resource,
+          input_hash: createHash('sha256').update(JSON.stringify({ service: contract.id, input })).digest('hex') },
+        request: { amount: contract.mpp.amount, recipient, currency: contract.mpp.token,
           methodDetails: { chainId: 42431, supportedModes: ['push'] } } });
       job = { id, challenge, paid: false }; remote.set(id, job);
     }
@@ -96,6 +105,188 @@ beforeEach(async () => {
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 afterAll(async () => { await rm(home, { recursive: true, force: true }); });
+
+const callInput = { contact: 'berkin', goal: 'Confirm the demo', on_behalf_of: 'Dogukan', language: 'tr' };
+const socialInput = { brief: 'A peaceful garden video', scenes: ['A vertical photograph of a misty Japanese garden', 'A wooden bridge in warm morning light'],
+  narration: 'Take a breath. Find your quiet moment.', voice: 'Olivia (en)', references: [], captions: true };
+async function socialSetup() {
+  contract = JSON.parse(await readFile(new URL('../../platform/docs/skill-integration/video.social.json', import.meta.url), 'utf8'));
+  contract.mpp = { protocol: 'mpp', chain: 'eip155:42431', token: '0x20c0000000000000000000000000000000000000',
+    decimals: 6, recipient, amount: '110000' };
+  contract.output_schema.properties.payment.anyOf[0].properties.network = { enum: ['stellar:testnet', 'eip155:42431'] };
+  await setBudget('videos', '0.22', '0.11', 'mpp', { agent: 'codex', service: 'video.social', recipient,
+    expires: new Date(Date.now() + 3600000).toISOString() });
+}
+describe('Tempo social-video payments', () => {
+  it('quotes once, uses video-scoped approval and delivers a vertical MP4 with an explorer receipt', async () => {
+    await socialSetup(); walletFixture = { update: vi.fn(), finish: vi.fn() };
+    pendingStatuses = ['running', 'succeeded'];
+    const q = await tempoTask({ service: 'video.social', input: { scenes: socialInput.scenes, narration: socialInput.narration, brief: ' A peaceful garden video ' }, budget: 'videos' });
+    expect(q.amount).toBe('0.1100000'); expect(signatures).toBe(0);
+    expect(JSON.parse((await readJob(q.id)).body)).toEqual(socialInput);
+    const done = await tempoTask({ id: q.id, approve: true, wait: true });
+    expect(done.status).toBe('succeeded');
+    expect(done.delivery).toMatchObject({ previewRequired: true, media: [{ contentType: 'video/mp4' }] });
+    expect(done.payment.explorerUrl).toBe(`https://explore.testnet.tempo.xyz/tx/${transaction}`);
+    expect(walletFixture.finish).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 'succeeded' }));
+    await tempoTask({ id: q.id, approve: true });
+    expect(signatures).toBe(1); expect(paidPosts).toBe(1); expect(remote.size).toBe(1);
+    expect((await getBudget('videos')).spent).toBe('0.1100000');
+  });
+  it('rejects image and call permissions, low limits and revoked grants before signing', async () => {
+    await socialSetup();
+    const wrong = await quoteTempo('video.social', socialInput, 'tempo');
+    await expect(runJob(wrong.id, { approve: true })).rejects.toThrow('outside');
+    await setBudget('calls', '0.22', '0.11', 'mpp', { agent: 'codex', service: 'phone.call', recipient,
+      expires: new Date(Date.now() + 3600000).toISOString() });
+    const callScope = await quoteTempo('video.social', socialInput, 'calls');
+    await expect(runJob(callScope.id, { approve: true })).rejects.toThrow('outside');
+    await setBudget('videos', '0.22', '0.10', 'mpp', { agent: 'codex', service: 'video.social', recipient,
+      expires: new Date(Date.now() + 3600000).toISOString() });
+    const limited = await quoteTempo('video.social', socialInput, 'videos');
+    await expect(runJob(limited.id, { approve: true })).rejects.toThrow('outside');
+    await revokeBudget('videos'); await expect(runJob(limited.id, { approve: true })).rejects.toThrow();
+    expect(signatures).toBe(0); expect(paidPosts).toBe(0);
+  });
+  it('rejects changes to any part of the saved video plan', async () => {
+    await socialSetup(); const q = await tempoTask({ service: 'video.social', input: socialInput, budget: 'videos' });
+    for (const patch of [{ brief: 'Changed' }, { scenes: ['Changed'] }, { narration: 'Changed' }, { voice: 'Sarah (en)' },
+      { captions: false }, { references: [{ url: `https://vqqbvydiehuwdzbgvmun.supabase.co/storage/v1/object/sign/outputs/references/${randomUUID()}/${'a'.repeat(64)}.png?token=fixture`, role: 'product' }] }]) {
+      await expect(tempoTask({ id: q.id, input: { ...socialInput, ...patch } })).rejects.toThrow('changed');
+    }
+    await expect(tempoTask({ id: q.id, service: 'image.generate' })).rejects.toThrow('service changed');
+    expect(signatures).toBe(0); expect(remote.size).toBe(1);
+  });
+  it('cancels without payment, then recovers a lost paid reply after revocation without paying again', async () => {
+    await socialSetup(); const q = await quoteTempo('video.social', socialInput, 'videos');
+    vi.mocked(signer.signAndPayTempo).mockRejectedValueOnce(new Error('cancelled'));
+    await expect(runJob(q.id, { approve: true })).rejects.toThrow('cancelled');
+    expect((await getBudget('videos')).reserved).toBe('0.0000000'); expect(paidPosts).toBe(0);
+    loseResponse = true; await expect(runJob(q.id, { approve: true })).rejects.toThrow('unconfirmed');
+    await revokeBudget('videos'); const done = await runJob(q.id);
+    expect(done.status).toBe('succeeded'); expect(signatures).toBe(1); expect(paidPosts).toBe(1);
+  });
+  it('keeps an uncertain video transaction reserved and resends only the saved hash credential', async () => {
+    await socialSetup(); const q = await quoteTempo('video.social', socialInput, 'videos');
+    loseBroadcast = true; await expect(runJob(q.id, { approve: true })).rejects.toThrow('uncertain');
+    expect((await getBudget('videos')).reserved).toBe('0.1100000');
+    const done = await runJob(q.id); expect(done.status).toBe('succeeded'); expect(signatures).toBe(1); expect(paidPosts).toBe(1);
+  });
+});
+
+describe('continuous native task journey', () => {
+  it('uses async submission, waits by default and finishes the same wallet with the result', async () => {
+    walletFixture = { update: vi.fn(), finish: vi.fn() };
+    pendingStatuses = ['running', 'succeeded'];
+    const done = await imageTask({ input: { prompt: 'Demo image' }, budget: 'tempo', approve: true });
+    expect(done.status).toBe('succeeded');
+    expect(walletFixture.update.mock.calls.map((/** @type {any[]} */ args) => args[0].status)).toEqual(['running', 'succeeded']);
+    expect(walletFixture.finish).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: done.id, status: 'succeeded' }));
+    const requests = vi.mocked(fetch).mock.calls;
+    expect(requests.some(([url, init]) => String(url).endsWith('?mode=async') && new Headers(init?.headers).has('Authorization'))).toBe(true);
+    expect(signatures).toBe(1); expect(paidPosts).toBe(1);
+  });
+  it('allows no-wait, keeps the saved task, and never signs again during status recovery', async () => {
+    walletFixture = { update: vi.fn(), finish: vi.fn() }; pendingStatuses = ['running'];
+    const pending = await imageTask({ input: { prompt: 'Demo image' }, budget: 'tempo', approve: true, wait: false });
+    expect(pending.status).toBe('running');
+    expect(walletFixture.finish).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: pending.id, status: 'running' }));
+    const done = await imageTask({ id: pending.id, wait: true });
+    expect(done.status).toBe('succeeded'); expect(done.id).toBe(pending.id);
+    expect(signatures).toBe(1); expect(paidPosts).toBe(1);
+  });
+  it('finalizes the window with uncertainty after a lost broadcast and preserves its reservation', async () => {
+    walletFixture = { update: vi.fn(), finish: vi.fn() }; loseBroadcast = true;
+    const stopped = await imageTask({ input: { prompt: 'Demo image' }, budget: 'tempo', approve: true });
+    expect(stopped.requiresAttention).toBe(true);
+    expect(walletFixture.finish).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: stopped.id, requiresAttention: true }));
+    expect((await getBudget('tempo')).reserved).toBe('0.0100000');
+    expect(signatures).toBe(1); expect(paidPosts).toBe(0);
+  });
+});
+async function phoneSetup() {
+  contract.id = 'phone.call'; contract.version = '1'; contract.resource = `${API_BASE}/v1/services/phone.call`;
+  contract.mpp.amount = '100000';
+  contract.preparation = { contacts: ['berkin'] };
+  contract.input_schema = { type: 'object', required: ['contact', 'goal'], properties: {
+    contact: { type: 'string' }, goal: { type: 'string' }, on_behalf_of: { type: 'string' }, language: { enum: ['en', 'tr'] }
+  }, additionalProperties: false };
+  contract.output_schema.properties.service_id = { const: 'phone.call' };
+  contract.output_schema.properties.service_version = { const: '1' };
+  contract.output_schema.properties.output.anyOf[0] = { type: 'object', required: ['call'], additionalProperties: false,
+    properties: { call: { type: 'object', required: ['contact', 'status', 'summary', 'goal_achieved', 'transcript'],
+      properties: { contact: { type: 'string' }, status: { type: 'string' }, summary: { type: 'string' },
+        goal_achieved: { type: 'boolean' }, duration_seconds: { type: 'integer', minimum: 0 },
+        transcript: { type: 'array', items: { type: 'object', required: ['speaker', 'text'],
+          properties: { speaker: { enum: ['agent', 'contact'] }, text: { type: 'string' } }, additionalProperties: false } } }, additionalProperties: false } } };
+  await setBudget('calls', '0.20', '0.10', 'mpp', { agent: 'codex', service: 'phone.call', recipient,
+    expires: new Date(Date.now() + 3600000).toISOString() });
+}
+
+describe('Tempo phone-call payments', () => {
+  it('normalizes call details, approves 0.10 PathUSD once and delivers summary/transcript', async () => {
+    await phoneSetup();
+    const q = await tempoTask({ service: 'phone.call', input: { ...callInput, contact: ' Berkin ', goal: ' Confirm the demo ' }, budget: 'calls' });
+    expect(q.amount).toBe('0.1000000'); expect(signatures).toBe(0);
+    expect(JSON.parse((await readJob(q.id)).body)).toEqual(callInput);
+    const done = await tempoTask({ id: q.id, approve: true, fundTestnet: true, wait: true });
+    expect(done.status).toBe('succeeded'); expect(done.delivery).toMatchObject({ kind: 'call', previewRequired: false, call: { goalAchieved: true } });
+    expect(done.delivery?.call?.transcript).toHaveLength(1);
+    expect(done.journey.message).toContain('do not redial');
+    expect(done.payment.explorerUrl).toBe(`https://explore.testnet.tempo.xyz/tx/${transaction}`);
+    await tempoTask({ id: q.id, approve: true, fundTestnet: true });
+    expect(signatures).toBe(1); expect(paidPosts).toBe(1); expect(remote.size).toBe(1);
+    expect((await getBudget('calls')).spent).toBe('0.1000000');
+  });
+  it('blocks image permissions and per-call limits before the signer', async () => {
+    await phoneSetup();
+    const q = await quoteTempo('phone.call', callInput, 'tempo');
+    await expect(runJob(q.id, { approve: true })).rejects.toThrow('outside');
+    const guided = await tempoTask({ id: q.id, approve: true, fundTestnet: true });
+    expect(guided.nextAction).toBe('review-spending-permission');
+    expect('paymentAttempted' in guided && guided.paymentAttempted).toBe(false);
+    await setBudget('calls', '0.20', '0.09', 'mpp', { agent: 'codex', service: 'phone.call', recipient,
+      expires: new Date(Date.now() + 3600000).toISOString() });
+    const limited = await quoteTempo('phone.call', callInput, 'calls');
+    await expect(runJob(limited.id, { approve: true })).rejects.toThrow('outside');
+    expect(signatures).toBe(0); expect(paidPosts).toBe(0);
+  });
+  it('rejects changed goal, language, caller, service or contact without a replacement call', async () => {
+    await phoneSetup();
+    const q = await tempoTask({ service: 'phone.call', input: callInput, budget: 'calls' });
+    for (const patch of [{ goal: 'Different' }, { language: 'en' }, { on_behalf_of: 'Someone else' }, { contact: 'alice' }]) {
+      await expect(tempoTask({ id: q.id, input: { ...callInput, ...patch } })).rejects.toThrow('changed');
+    }
+    await expect(tempoTask({ id: q.id, service: 'image.generate' })).rejects.toThrow('service changed');
+    await expect(quoteTempo('phone.call', { ...callInput, contact: '+15550000000' }, 'calls')).rejects.toThrow('Invalid phone');
+    await expect(quoteTempo('phone.call', { ...callInput, contact: 'alice' }, 'calls')).rejects.toThrow('approved');
+    expect(signatures).toBe(0); expect(remote.size).toBe(1);
+  });
+  it('releases a cancelled call reservation, then recovers a lost paid response without resigning', async () => {
+    await phoneSetup();
+    const q = await quoteTempo('phone.call', callInput, 'calls');
+    vi.mocked(signer.signAndPayTempo).mockRejectedValueOnce(new Error('cancelled'));
+    await expect(runJob(q.id, { approve: true })).rejects.toThrow('cancelled');
+    expect((await getBudget('calls')).reserved).toBe('0.0000000');
+    expect(paidPosts).toBe(0);
+    loseResponse = true;
+    await expect(runJob(q.id, { approve: true })).rejects.toThrow('unconfirmed');
+    await revokeBudget('calls');
+    const done = await runJob(q.id);
+    expect(done.status).toBe('succeeded'); expect(signatures).toBe(1); expect(paidPosts).toBe(1);
+  });
+  it('rejects quote price tampering and recovers an interrupted broadcast using only its saved credential', async () => {
+    await phoneSetup(); mutate = c => { c.request.amount = '10000'; };
+    await expect(quoteTempo('phone.call', callInput, 'calls')).rejects.toThrow('price or destination');
+    expect(signatures).toBe(0);
+    mutate = () => {}; const q = await quoteTempo('phone.call', callInput, 'calls');
+    loseBroadcast = true;
+    await expect(runJob(q.id, { approve: true })).rejects.toThrow('uncertain');
+    expect((await getBudget('calls')).reserved).toBe('0.1000000');
+    const done = await runJob(q.id);
+    expect(done.status).toBe('succeeded'); expect(signatures).toBe(1); expect(paidPosts).toBe(1);
+  });
+});
 
 describe('Tempo plugin payments', () => {
   it('blocks new purchases after revoke but recovers a saved payment without signing again', async () => {
@@ -127,15 +318,28 @@ describe('Tempo plugin payments', () => {
     expect(done.journey.stage).toBe('ready'); expect(done.delivery?.previewRequired).toBe(true);
     const reopen = await imageTask({ id: q.id });
     expect(reopen.payment.transaction).toBe(transaction);
+    expect(reopen.transactionUrl).toBe(`https://explore.testnet.tempo.xyz/tx/${transaction}`);
     expect(remote.size).toBe(1); expect(signatures).toBe(1); expect(paidPosts).toBe(1);
   });
-  it('keeps the task when setup or faucet consent is missing', async () => {
+  it('automatically enables testnet funding for an approved task and still blocks missing setup', async () => {
     const q = await imageTask({ input: { prompt: 'Cat' }, budget: 'tempo', approve: true });
-    expect(q.nextAction).toContain('Confirm disposable'); expect(signatures).toBe(0);
+    expect(q.status).toBe('succeeded'); expect(signatures).toBe(1);
     vi.spyOn(readiness, 'tempoReadiness').mockReturnValue({ ready: false, reason: 'companion-missing', nextAction: 'Build companion',
       protocol: 'mpp', network: 'eip155:42431', unit: 'test PathUSD', walletMode: 'disposable', realFundsSupported: false, permissionsEnabled: true, permissionEnforcement: 'local-only', delegatedSigningEnabled: false });
-    expect((await imageTask({ id: q.id, approve: true, fundTestnet: true })).nextAction).toBe('Build companion');
-    expect(signatures).toBe(0); expect(remote.size).toBe(1);
+    const blocked = await imageTask({ input: { prompt: 'Dog' }, budget: 'tempo', approve: true });
+    expect(blocked.nextAction).toBe('Build companion');
+    expect(signatures).toBe(1); expect(remote.size).toBe(2);
+  });
+  it('releases an unfunded reservation and returns an actionable same-task retry, not a stale address', async () => {
+    const q = await imageTask({ input: { prompt: 'Cat' }, budget: 'tempo' });
+    vi.mocked(signer.signAndPayTempo).mockRejectedValueOnce(new TempoFundingError('funding-cancelled'));
+    const stopped = await imageTask({ id: q.id, approve: true });
+    expect(stopped.nextAction).toBe('retry-wallet-funding'); expect(stopped.interrupted).toBe(true);
+    expect('paymentAttempted' in stopped && stopped.paymentAttempted).toBe(false);
+    expect(stopped.fundingIssue).toBe('funding-cancelled');
+    expect((await getBudget('tempo')).reserved).toBe('0.0000000'); expect(signatures).toBe(0); expect(paidPosts).toBe(0);
+    const done = await imageTask({ id: q.id, approve: true });
+    expect(done.status).toBe('succeeded'); expect(done.fundingIssue).toBeUndefined(); expect(signatures).toBe(1); expect(remote.size).toBe(1);
   });
   it('returns a recoverable task card on a lost paid response', async () => {
     const q = await imageTask({ input: { prompt: 'Cat' }, budget: 'tempo' });
